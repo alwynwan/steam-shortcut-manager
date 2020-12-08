@@ -272,9 +272,9 @@ namespace steam_shortcut_manager
 
             steamLibs.Add(Properties.Settings.Default.steamDir);
 
-            if (System.IO.File.Exists(steamDirTxt.Text + "\\steamapps\\libraryfolders.vdf"))
+            if (File.Exists(steamDirTxt.Text + "\\steamapps\\libraryfolders.vdf"))
             {
-                var contents = System.IO.File.ReadAllText(steamDirTxt.Text + "\\steamapps\\libraryfolders.vdf");
+                var contents = File.ReadAllText(steamDirTxt.Text + "\\steamapps\\libraryfolders.vdf");
                 Regex foldersPattern = new Regex("\"\\d\"\\t\\t\"(.*)\"");
                 Match foldersMatch = foldersPattern.Match(contents);
 
@@ -297,7 +297,16 @@ namespace steam_shortcut_manager
                 fbd.Description = "Locate a valid Steam Library (directory which contains a steamapps folder)";
                 if (fbd.ShowDialog() == DialogResult.OK)
                 {
-                    steamLibList.Items.Add(fbd.SelectedPath);
+                    if (!File.Exists(fbd.SelectedPath + "\\steam.dll"))
+                    {
+                        MessageBox.Show($"{fbd.SelectedPath} is not a valid Steam Library!");
+                        return;
+                    }
+
+                    if (steamLibList.Items.Contains(fbd.SelectedPath + "\\"))
+                        MessageBox.Show($"{fbd.SelectedPath} has already been added to the search directory list!");
+                    else
+                        steamLibList.Items.Add(fbd.SelectedPath + "\\");
                 }
             }
         }
@@ -308,35 +317,44 @@ namespace steam_shortcut_manager
 
             for (var i = 0; i < steamLibList.CheckedItems.Count; i++)
             {
-                var libDir = steamLibList.CheckedItems[i].ToString();
-
-                if (libDir[libDir.Length - 1] != '\\')
-                    libDir += '\\';
-
-                var manifests = Directory.GetFiles(steamLibList.CheckedItems[i].ToString() + "steamapps\\", "appmanifest_*.acf");
-
-                foreach (var manifest in manifests)
+                try
                 {
-                    var manifestContents = System.IO.File.ReadAllText(manifest);
+                    var libDir = steamLibList.CheckedItems[i].ToString();
 
-                    Regex manifestRegex = new Regex("\"appid\"\\t\\t\"(\\d+)\".*\"name\"\\t\\t\"(.*)?\"\\n\\t\"StateFlags\".*\"installdir\"\\t\\t\"(.*)\"\\n\\t\"LastUpdated\".*\"BytesToDownload\"\\t\\t\"(\\d+)\"\\n\\t\"BytesDownloaded\"\\t\\t\"(\\d+)\"", RegexOptions.Singleline);
-                    var manifestMatch = manifestRegex.Match(manifestContents);
+                    if (libDir[libDir.Length - 1] != '\\')
+                        libDir += '\\';
 
-                    if (manifestMatch.Success)
+                    var manifests = Directory.GetFiles(steamLibList.CheckedItems[i].ToString() + "steamapps\\", "appmanifest_*.acf");
+
+                    foreach (var manifest in manifests)
                     {
-                        var appId = int.Parse(manifestMatch.Groups[1].Value);
-                        var appName = manifestMatch.Groups[2].Value;
-                        var installDir = steamLibList.CheckedItems[i].ToString() + $"steamapps\\common\\{manifestMatch.Groups[3].Value}";
-                        var bytesToDownload = long.Parse(manifestMatch.Groups[4].Value);
-                        var bytesDownloaded = long.Parse(manifestMatch.Groups[5].Value);
+                        var manifestContents = File.ReadAllText(manifest);
 
-                        // Game is fully installed
-                        if (bytesDownloaded >= bytesToDownload)
+                        Regex manifestRegex = new Regex("\"appid\"\\t\\t\"(\\d+)\".*\"name\"\\t\\t\"(.*)?\"\\n\\t\"StateFlags\".*\"installdir\"\\t\\t\"(.*)\"\\n\\t\"LastUpdated\".*\"BytesToDownload\"\\t\\t\"(\\d+)\"\\n\\t\"BytesDownloaded\"\\t\\t\"(\\d+)\"", RegexOptions.Singleline);
+                        var manifestMatch = manifestRegex.Match(manifestContents);
+
+                        if (manifestMatch.Success)
                         {
-                            installedGames.Add(appId, new GameInfo(appName, installDir));
+                            var appId = int.Parse(manifestMatch.Groups[1].Value);
+                            var appName = manifestMatch.Groups[2].Value;
+                            var installDir = steamLibList.CheckedItems[i].ToString() + $"steamapps\\common\\{manifestMatch.Groups[3].Value}";
+                            var bytesToDownload = long.Parse(manifestMatch.Groups[4].Value);
+                            var bytesDownloaded = long.Parse(manifestMatch.Groups[5].Value);
+
+                            // Game is fully installed
+                            if (bytesDownloaded >= bytesToDownload)
+                            {
+                                installedGames.Add(appId, new GameInfo(appName, installDir));
+                            }
                         }
                     }
                 }
+                catch (Exception)
+                {
+                    MessageBox.Show($"{steamLibList.CheckedItems[i]} is not a valid Steam Library");
+                    continue;
+                }
+
             }
 
             return installedGames;
@@ -351,42 +369,45 @@ namespace steam_shortcut_manager
             return AppInfo;
         }
 
-        private void CreateShortcut(int id, GameInfo gameInfo)
+        private bool CreateShortcut(int id, GameInfo gameInfo)
         {
             string startMenuDir = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData) + @"\Microsoft\Windows\Start Menu\Programs\Steam";
 
             XDocument data = GetAppInfo();
 
             var appcache = data.Descendants("Application").SingleOrDefault(app => int.Parse(app.Attribute("id").Value) == id);
-            var appinfo = appcache.Descendants("Key").Where(app => app.Attribute("name").Value == "appinfo");
-            var appinfoCommon = appinfo.Descendants("Key").Where(app => app.Attribute("name").Value == "common");
-            var clienticon = appinfoCommon.Descendants("Value").Where(app => app.Attribute("name").Value == "clienticon").ToArray();
 
-            var configs = appcache.Descendants("Key").Where(app => app.Attribute("name").Value == "config");
-            var launch = configs.Descendants("Key").Where(key => key.Attribute("name").Value == "launch").ToArray();
+            var clienticon = appcache.Descendants("Key").Where(app => app.Attribute("name").Value == "appinfo")
+                .Descendants("Key").Where(app => app.Attribute("name").Value == "common")
+                .Descendants("Value").Where(app => app.Attribute("name").Value == "clienticon").ToArray();
 
-            var launchConfigs = launch[0].ToString();
+            var launchConfigs = appcache.Descendants("Key").Where(app => app.Attribute("name").Value == "config")
+                .Descendants("Key").Where(key => key.Attribute("name").Value == "launch").ToArray()[0].ToString();
 
             Regex dataRegex = new Regex("name=\\\"executable\\\" type=\\\"string\\\">(.*?)<\\/Value>\\r\\n");
             var dataMatch = dataRegex.Match(launchConfigs);
 
-            if (dataMatch.Success)
-            {
-                var shortcutLocation = startMenuDir + "\\" + CleanString(gameInfo.gameName) + ".url";
+            if (!dataMatch.Success)
+                return false;
 
-                using (StreamWriter writer = new StreamWriter(shortcutLocation))
-                {
-                    writer.WriteLine("[{000214A0-0000-0000-C000-000000000046}]");
-                    writer.WriteLine("Prop3=19,0");
-                    writer.WriteLine("[InternetShortcut]");
-                    writer.WriteLine("IDList=");
-                    writer.WriteLine($"IconIndex=0");
-                    writer.WriteLine($"URL=steam://rungameid/{id}");
-                    var iconPath = Properties.Settings.Default.steamDir + "steam\\games\\" + clienticon[0].Value + ".ico";
-                    writer.WriteLine($"IconFile={iconPath}");
-                    writer.Flush();
-                }
+
+            var shortcutLocation = startMenuDir + "\\" + CleanString(gameInfo.gameName) + ".url";
+
+            using (StreamWriter writer = new StreamWriter(shortcutLocation))
+            {
+                var iconPath = Properties.Settings.Default.steamDir + "steam\\games\\" + clienticon[0].Value + ".ico";
+                writer.WriteLine(
+                    $@"[{{000214A0-0000-0000-C000-000000000046}}]
+Prop3=19,0
+[InternetShortcut]
+IDList=
+IconIndex=0
+URL=steam://rungameid/{id}
+IconFile={iconPath}");
+                writer.Flush();
             }
+
+            return true;
         }
 
         private void Form1_Load(object sender, EventArgs e)
@@ -467,7 +488,7 @@ namespace steam_shortcut_manager
 
         private void createShortcutsBtn_Click(object sender, EventArgs e)
         {
-
+            var shortcutsCreated = 0;
             foreach (var game in FindInstalledGames())
             {
                 try
@@ -475,7 +496,8 @@ namespace steam_shortcut_manager
                     var gameNode = gameList.Nodes.Find(game.Key.ToString(), false);
                     if (gameNode.Length > 0 && gameNode[0].Checked)
                     {
-                        CreateShortcut(game.Key, game.Value);
+                        if (CreateShortcut(game.Key, game.Value))
+                            shortcutsCreated++;
                     }
                 }
                 catch (Exception)
@@ -483,6 +505,8 @@ namespace steam_shortcut_manager
                     continue;
                 }
             }
+
+            MessageBox.Show($"Finished creating {shortcutsCreated} shortcuts!");
         }
     }
 }
